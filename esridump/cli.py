@@ -2,7 +2,7 @@ import argparse
 import email.parser
 from six.moves import urllib
 import logging
-import simplejson as json
+import json
 import sys
 
 from esridump import EsriDumper
@@ -67,6 +67,15 @@ def _parse_args(args):
         dest='params',
         default=[],
         help="Add a URL parameter to send when requesting from Esri server")
+    parser.add_argument("-t", "--timeout",
+        type=int,
+        default=30,
+        help="HTTP timeout in seconds, default 30")
+    parser.add_argument("--paginate-oid",
+        dest='paginate_oid',
+        action='store_true',
+        default=False,
+        help="Turn on paginate by OID regardless of normal pagination support")
 
     return parser.parse_args(args)
 
@@ -90,7 +99,9 @@ def main():
         fields=requested_fields,
         request_geometry=args.request_geometry,
         proxy=args.proxy,
-        parent_logger=logger)
+        timeout=args.timeout,
+        parent_logger=logger,
+        paginate_oid=args.paginate_oid)
 
     if args.jsonlines:
         for feature in dumper:

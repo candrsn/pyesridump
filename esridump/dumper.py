@@ -1,6 +1,6 @@
 import logging
 import requests
-import simplejson as json
+import json
 import socket
 from six.moves.urllib.parse import urlencode
 
@@ -11,8 +11,9 @@ class EsriDumper(object):
     def __init__(self, url, parent_logger=None,
         extra_query_args=None, extra_headers=None,
         timeout=None, fields=None, request_geometry=True,
-        outSR=None, proxy=None, 
-        start_with=None, geometry_precision=None):
+        outSR=None, proxy=None,
+        start_with=None, geometry_precision=None,
+        paginate_oid=False):
         self._layer_url = url
         self._query_params = extra_query_args or {}
         self._headers = extra_headers or {}
@@ -23,6 +24,7 @@ class EsriDumper(object):
         self._proxy = proxy or None
         self._startWith = start_with or 0
         self._precision = geometry_precision or 7
+        self._paginate_oid = paginate_oid
 
         if parent_logger:
             self._logger = parent_logger.getChild('esridump')
@@ -58,7 +60,7 @@ class EsriDumper(object):
 
         override_where = override_args.get('where')
         requested_where = query_args.get('where')
-        if override_where and requested_where != '1=1':
+        if override_where and requested_where and requested_where != '1=1':
             # AND the where args together if the user is trying to override
             # the where param and we're trying to get 'all the rows'
             override_args['where'] = '({}) AND ({})'.format(
@@ -182,7 +184,33 @@ class EsriDumper(object):
         # for the attribute names rather than the requested field names, so pick the min and max
         # deliberately rather than relying on the names.
         min_max_values = metadata['features'][0]['attributes'].values()
-        return (min(min_max_values), max(min_max_values))
+        min_value = min(min_max_values)
+        max_value = max(min_max_values)
+        query_args = self._build_query_args({
+            'f': 'json',
+            'outFields': '*',
+            'outStatistics': json.dumps([
+                dict(statisticType='min', onStatisticField=oid_field_name, outStatisticFieldName='THE_MIN'),
+                dict(statisticType='max', onStatisticField=oid_field_name, outStatisticFieldName='THE_MAX'),
+            ], separators=(',', ':'))
+        })
+        query_args = self._build_query_args({
+            'where': '{} = {} OR {} = {}'.format(
+                oid_field_name,
+                min_value,
+                oid_field_name,
+                max_value
+            ),
+            'returnIdsOnly': 'true',
+            'f': 'json',
+        })
+        headers = self._build_headers()
+        url = self._build_url('/query')
+        response = self._request('GET', url, params=query_args, headers=headers)
+        oid_data = self._handle_esri_errors(response, "Could not check min/max values")
+        if not oid_data or not oid_data.get('objectIds') or min_value not in oid_data['objectIds'] or max_value not in oid_data['objectIds']:
+            raise EsriDownloadError('Server returned invalid min/max')
+        return (min_value, max_value)
 
     def _get_layer_oids(self):
         query_args = self._build_query_args({
@@ -277,7 +305,7 @@ class EsriDumper(object):
 
         page_args = []
 
-        if row_count is not None and (metadata.get('supportsPagination') or \
+        if not self._paginate_oid and row_count is not None and (metadata.get('supportsPagination') or \
                 (metadata.get('advancedQueryCapabilities') and metadata['advancedQueryCapabilities']['supportsPagination'])):
             # If the layer supports pagination, we can use resultOffset/resultRecordCount to paginate
 
@@ -306,7 +334,7 @@ class EsriDumper(object):
 
             use_oids = True
             oid_field_name = self._find_oid_field_name(metadata)
-        
+
             if not oid_field_name:
                 raise EsriDownloadError("Could not find object ID field name for deduplication")
 
